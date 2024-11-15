@@ -1,0 +1,9 @@
+{
+	"compilerOptions": {
+		"checkJs": true,
+		"lib": ["esnext", "dom"],
+		"types": ["@webgpu/types", "@types/emscripten"],
+	},
+	"include": ["editor/**/*.js"],
+	"exclude": ["node_modules"]
+}

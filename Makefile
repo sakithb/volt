@@ -4,8 +4,8 @@ build:
 	make -C build/
 	rm -rf dist/
 	mkdir -p dist/
-	mv build/engine.html build/engine.js build/engine.wasm dist/.
-	mv dist/engine.html dist/index.html
+	cp build/engine.js build/engine.wasm build/engine.data dist/.
+	cp index.html dist/.
 	cp -r editor/* dist/.
 
 serve:
