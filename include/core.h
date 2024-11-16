@@ -9,6 +9,7 @@ struct RendererState {
 	WGPUDevice device;
 	WGPUQueue queue;
 	WGPUSurface surface;
+	WGPURenderPipeline pipeline;
 };
 
 #endif
