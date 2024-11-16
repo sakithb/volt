@@ -12,5 +12,5 @@ configure_file(${CLANGD_TEMPLATE} ${CLANGD_FILE})
 
 file(GLOB_RECURSE ENGINE_SRCS ${PROJECT_SOURCE_DIR}/engine/*.c)
 add_executable(engine ${ENGINE_SRCS})
-set_target_properties(engine PROPERTIES C_STANDARD 99 LINK_FLAGS "-sEXPORTED_RUNTIME_METHODS=ccall -sWASM=1 -sUSE_WEBGPU=1 --preload-file ../assets/")
+set_target_properties(engine PROPERTIES C_STANDARD 99 LINK_FLAGS "-sEXPORTED_RUNTIME_METHODS=ccall -sASYNCIFY -sWASM=1 -sUSE_WEBGPU=1 --preload-file ../assets/")
 target_include_directories(engine PRIVATE ${PROJECT_SOURCE_DIR}/include)

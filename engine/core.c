@@ -1,26 +1,24 @@
 #include <stdio.h>
+#include <stdbool.h>
 #include <emscripten.h>
 #include <emscripten/html5.h>
 #include <emscripten/html5_webgpu.h>
-#include "defines.h"
+#include "core.h"
 
-struct WGPUState state = {};
+const int width = 1920;
+const int height = 1080;
 
-WGPUBuffer create_buffer(const void* data, size_t size, WGPUBufferUsage usage) {
-	WGPUBufferDescriptor desc = {};
-	desc.usage = WGPUBufferUsage_CopyDst | usage;
-	desc.size  = size;
-	WGPUBuffer buffer = wgpuDeviceCreateBuffer(state.device, &desc);
-	wgpuQueueWriteBuffer(state.queue, buffer, 0, data, size);
-	return buffer;
-}
+struct RendererState rs = {0};
 
-WGPUShaderModule create_shader(const char *path, WGPUDevice device) {
+WGPUShaderModule create_shader(const char *path) {
 	FILE *f = fopen(path, "rb");
+
 	fseek(f, 0, SEEK_END);
-	long size = ftell(f);
-	char *code = malloc(size);
-	fread(code, 1, size, f);
+	long s = ftell(f);
+
+	char *code = malloc(s);
+	fread(code, 1, s, f);
+
 	fclose(f);
 
 	WGPUShaderModuleWGSLDescriptor wgsl = {};
@@ -31,169 +29,135 @@ WGPUShaderModule create_shader(const char *path, WGPUDevice device) {
 	desc.nextInChain = (WGPUChainedStruct*)&wgsl;
 	desc.label = NULL;
 
-	return wgpuDeviceCreateShaderModule(device, &desc);
+	return wgpuDeviceCreateShaderModule(rs.device, &desc);
 }
 
-static bool redraw() {
-	WGPUTextureView backBufView = wgpuSwapChainGetCurrentTextureView(state.swapchain);			// create textureView
-
-	WGPURenderPassColorAttachment colorDesc = {};
-	colorDesc.view    = backBufView;
-	colorDesc.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
-	colorDesc.loadOp  = WGPULoadOp_Clear;
-	colorDesc.storeOp = WGPUStoreOp_Store;
-	colorDesc.clearValue.r = 0.3f;
-	colorDesc.clearValue.g = 0.3f;
-	colorDesc.clearValue.b = 0.3f;
-	colorDesc.clearValue.a = 1.0f;
-
-	WGPURenderPassDescriptor renderPass = {};
-	renderPass.colorAttachmentCount = 1;
-	renderPass.colorAttachments = &colorDesc;
-
-	WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(state.device, NULL);			// create encoder
-	WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(encoder, &renderPass);	// create pass
-
-	// draw the triangle (comment these five lines to simply clear the screen)
-	wgpuRenderPassEncoderSetPipeline(pass, state.pipeline);
-	wgpuRenderPassEncoderSetBindGroup(pass, 0, state.bind_grp, 0, 0);
-	wgpuRenderPassEncoderSetVertexBuffer(pass, 0, state.vtx_buf, 0, WGPU_WHOLE_SIZE);
-	wgpuRenderPassEncoderSetIndexBuffer(pass, state.idx_buf, WGPUIndexFormat_Uint16, 0, WGPU_WHOLE_SIZE);
-	wgpuRenderPassEncoderDrawIndexed(pass, 3, 1, 0, 0, 0);
-
-	wgpuRenderPassEncoderEnd(pass);
-	wgpuRenderPassEncoderRelease(pass);														// release pass
-	WGPUCommandBuffer commands = wgpuCommandEncoderFinish(encoder, NULL);				// create commands
-	wgpuCommandEncoderRelease(encoder);														// release encoder
-
-	wgpuQueueSubmit(state.queue, 1, &commands);
-	wgpuCommandBufferRelease(commands);														// release commands
-	wgpuSwapChainPresent(state.swapchain);
-	wgpuTextureViewRelease(backBufView);													// release textureView
-
-	return true;
+static void request_adapter_cb(WGPURequestAdapterStatus status, WGPUAdapter adapter, char const *message, void *userdata) {
+	if (status == WGPURequestAdapterStatus_Success) {
+		rs.adapter = adapter;
+	} else {
+		fprintf(stderr, "Failed to request adapter: %s\n", message);
+	}
 }
 
-EMSCRIPTEN_KEEPALIVE void setup() {
-	state.device = emscripten_webgpu_get_device();
-	state.queue = wgpuDeviceGetQueue(state.device);
+static void request_device_cb(WGPURequestDeviceStatus status, WGPUDevice device, char const *message, void *userdata) {
+	if (status == WGPURequestDeviceStatus_Success) {
+		rs.device = device;
+	} else {
+		fprintf(stderr, "Failed to request device: %s\n", message);
+	}
+}
 
-	WGPUSurfaceDescriptorFromCanvasHTMLSelector canvas_desc = {};
+void main_loop() {
+	// Get texture view
+
+	WGPUSurfaceTexture tex = {0};
+	wgpuSurfaceGetCurrentTexture(rs.surface, &tex);
+
+	if (tex.status != WGPUSurfaceGetCurrentTextureStatus_Success) {
+		fprintf(stderr, "Failed to retrieve texture\n");
+		return;
+	}
+
+	WGPUTextureViewDescriptor view_desc = {0};
+	view_desc.format = wgpuTextureGetFormat(tex.texture);
+	view_desc.dimension = WGPUTextureViewDimension_2D;
+	view_desc.baseMipLevel = 0;
+	view_desc.mipLevelCount = 1;
+	view_desc.baseArrayLayer = 0;
+	view_desc.arrayLayerCount = 1;
+	view_desc.aspect = WGPUTextureAspect_All;
+
+	WGPUTextureView view = wgpuTextureCreateView(tex.texture, &view_desc);
+
+	wgpuTextureRelease(tex.texture);
+
+	// Render to view
+
+	WGPUCommandEncoderDescriptor cenc_desc = {0};
+	WGPUCommandEncoder cenc = wgpuDeviceCreateCommandEncoder(rs.device, &cenc_desc);
+
+	WGPURenderPassColorAttachment cattach = {0};
+	cattach.view = view;
+	cattach.loadOp = WGPULoadOp_Clear;
+	cattach.storeOp = WGPUStoreOp_Store;
+	cattach.clearValue = (WGPUColor){1.0f, 1.0f, 1.0f, 1.0f};
+	cattach.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+
+	WGPURenderPassDescriptor rpass_desc = {0};
+	rpass_desc.colorAttachments = &cattach;
+	rpass_desc.colorAttachmentCount = 1;
+
+	WGPURenderPassEncoder rpass = wgpuCommandEncoderBeginRenderPass(cenc, &rpass_desc);
+	wgpuRenderPassEncoderEnd(rpass);
+	wgpuRenderPassEncoderRelease(rpass);
+
+	WGPUCommandBufferDescriptor cbuf_desc = {0};
+	WGPUCommandBuffer cbuf = wgpuCommandEncoderFinish(cenc, &cbuf_desc);
+	wgpuCommandEncoderRelease(cenc);
+
+	wgpuQueueSubmit(rs.queue, 1, &cbuf);
+	wgpuCommandBufferRelease(cbuf);
+
+	// Frame cleanup
+
+	wgpuTextureViewRelease(view);
+}
+
+int main() {
+	// Create a instance, adapter and device
+
+	rs.instance = wgpuCreateInstance(NULL);
+
+	WGPURequestAdapterOptions adap_opt = {0};
+	wgpuInstanceRequestAdapter(rs.instance, &adap_opt, request_adapter_cb, NULL);
+
+	while (rs.adapter == NULL) {
+		emscripten_sleep(100);
+	}
+
+	WGPUDeviceDescriptor dev_desc = {0};
+	wgpuAdapterRequestDevice(rs.adapter, &dev_desc, request_device_cb, NULL);
+
+	while (rs.device == NULL) {
+		emscripten_sleep(100);
+	}
+
+	rs.queue = wgpuDeviceGetQueue(rs.device);
+
+	// Use canvas as surface
+
+	WGPUSurfaceDescriptorFromCanvasHTMLSelector canvas_desc = {0};
 	canvas_desc.chain.sType = WGPUSType_SurfaceDescriptorFromCanvasHTMLSelector;
 	canvas_desc.selector = "#canvas";
 
-	WGPUSurfaceDescriptor surf_desc = {};
+	WGPUSurfaceDescriptor surf_desc = {0};
 	surf_desc.nextInChain = (WGPUChainedStruct*)&canvas_desc;
 
-	WGPUSurface surface = wgpuInstanceCreateSurface(NULL, &surf_desc);
+	rs.surface = wgpuInstanceCreateSurface(rs.instance, &surf_desc);
 
-	WGPUSwapChainDescriptor swap_desc = {};
-	swap_desc.usage  = WGPUTextureUsage_RenderAttachment;
-	swap_desc.format = WGPUTextureFormat_BGRA8Unorm;
-	swap_desc.width  = 1920;
-	swap_desc.height = 1080;
-	swap_desc.presentMode = WGPUPresentMode_Fifo;
-	
-	WGPUSwapChain swapchain = wgpuDeviceCreateSwapChain(state.device, surface, &swap_desc);
+	WGPUSurfaceConfiguration surf_cfg = {0};
+	surf_cfg.device = rs.device;
+	surf_cfg.format = wgpuSurfaceGetPreferredFormat(rs.surface, rs.adapter);
+	surf_cfg.usage = WGPUTextureUsage_RenderAttachment;
+	surf_cfg.alphaMode = WGPUCompositeAlphaMode_Auto;
+	surf_cfg.width = width;
+	surf_cfg.height = height;
+	surf_cfg.presentMode = WGPUPresentMode_Fifo;
 
-	WGPUShaderModule vert_shd = create_shader("default_vert.wgsl", state.device);
-	WGPUShaderModule frag_shd = create_shader("default_frag.wgsl", state.device);
+	wgpuSurfaceConfigure(rs.surface, &surf_cfg);
 
-	WGPUBufferBindingLayout buf = {};
-	buf.type = WGPUBufferBindingType_Uniform;
+	emscripten_set_main_loop(main_loop, 0, true);
 
-	WGPUBindGroupLayoutEntry bglEntry = {};
-	bglEntry.binding = 0;
-	bglEntry.visibility = WGPUShaderStage_Vertex;
-	bglEntry.buffer = buf;
+	// Cleanup
 
-	WGPUBindGroupLayoutDescriptor bglDesc = {};
-	bglDesc.entryCount = 1;
-	bglDesc.entries = &bglEntry;
-	WGPUBindGroupLayout bindGroupLayout = wgpuDeviceCreateBindGroupLayout(state.device, &bglDesc);
+	wgpuSurfaceUnconfigure(rs.surface);
+	wgpuSurfaceRelease(rs.surface);
 
-	WGPUPipelineLayoutDescriptor layoutDesc = {};
-	layoutDesc.bindGroupLayoutCount = 1;
-	layoutDesc.bindGroupLayouts = &bindGroupLayout;
-	WGPUPipelineLayout pipelineLayout = wgpuDeviceCreatePipelineLayout(state.device, &layoutDesc);
+	wgpuQueueRelease(rs.queue);
+	wgpuDeviceRelease(rs.device);
+	wgpuAdapterRelease(rs.adapter);
 
-	WGPUVertexAttribute vertAttrs[1] = {};
-	vertAttrs[0].format = WGPUVertexFormat_Float32x2;
-	vertAttrs[0].offset = 0;
-	vertAttrs[0].shaderLocation = 0;
-
-	WGPUVertexBufferLayout vertexBufferLayout = {};
-	vertexBufferLayout.arrayStride = 2 * sizeof(float);
-	vertexBufferLayout.attributeCount = 1;
-	vertexBufferLayout.attributes = vertAttrs;
-
-	WGPUBlendState blend = {};
-	blend.color.operation = WGPUBlendOperation_Add;
-	blend.color.srcFactor = WGPUBlendFactor_One;
-	blend.color.dstFactor = WGPUBlendFactor_One;
-	blend.alpha.operation = WGPUBlendOperation_Add;
-	blend.alpha.srcFactor = WGPUBlendFactor_One;
-	blend.alpha.dstFactor = WGPUBlendFactor_One;
-
-	WGPUColorTargetState colorTarget = {};
-	colorTarget.format = WGPUTextureFormat_BGRA8Unorm;
-	colorTarget.blend = &blend;
-	colorTarget.writeMask = WGPUColorWriteMask_All;
-
-	WGPUFragmentState fragment = {};
-	fragment.module = frag_shd;
-	fragment.entryPoint = "main";
-	fragment.targetCount = 1;
-	fragment.targets = &colorTarget;
-
-	WGPURenderPipelineDescriptor desc = {};
-	desc.fragment = &fragment;
-	desc.layout = pipelineLayout;
-	desc.depthStencil = NULL;
-
-	desc.vertex.module = vert_shd;
-	desc.vertex.entryPoint = "main";
-	desc.vertex.bufferCount = 1;
-	desc.vertex.buffers = &vertexBufferLayout;
-
-	desc.multisample.count = 1;
-	desc.multisample.mask = 0xFFFFFFFF;
-	desc.multisample.alphaToCoverageEnabled = false;
-
-	desc.primitive.frontFace = WGPUFrontFace_CCW;
-	desc.primitive.cullMode = WGPUCullMode_None;
-	desc.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-	desc.primitive.stripIndexFormat = WGPUIndexFormat_Undefined;
-
-	WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(state.device, &desc);
-
-	wgpuPipelineLayoutRelease(pipelineLayout);
-
-	wgpuShaderModuleRelease(frag_shd);
-	wgpuShaderModuleRelease(vert_shd);
-
-	float const vertData[] = {
-		-0.8f, -0.8f, // BL
-		 0.8f, -0.8f, // BR
-		-0.0f,  0.8f, // top
-	};
-
-	uint16_t const indxData[] = {
-		0, 1, 2,
-		0 // padding (better way of doing this?)
-	};
-
-	WGPUBuffer vertBuf = create_buffer(vertData, sizeof(vertData), WGPUBufferUsage_Vertex);
-	WGPUBuffer indxBuf = create_buffer(indxData, sizeof(indxData), WGPUBufferUsage_Index);
-
-	WGPUBindGroupDescriptor bgDesc = {};
-	bgDesc.layout = bindGroupLayout;
-	bgDesc.entryCount = 0;
-	bgDesc.entries = NULL;
-
-	WGPUBindGroup bindGroup = wgpuDeviceCreateBindGroup(state.device, &bgDesc);
-
-	wgpuBindGroupLayoutRelease(bindGroupLayout);
-
-	emscripten_request_animation_frame_loop(&redraw, NULL);
+	return 0;
 }
+

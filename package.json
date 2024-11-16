@@ -1,6 +1,0 @@
-{
-	"devDependencies": {
-		"@types/emscripten": "^1.39.13",
-		"@webgpu/types": "^0.1.51"
-	}
-}
