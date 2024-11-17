@@ -18,11 +18,11 @@ WGPUShaderModule create_shader(const char *path) {
 	}
 
 	fseek(f, 0, SEEK_END);
-	long s = ftell(f);
+	long sz = ftell(f);
 
-	char *code = malloc(s);
+	char *code = malloc(sz);
 	fseek(f, 0, SEEK_SET);
-	fread(code, 1, s-1, f);
+	fread(code, 1, sz-1, f);
 
 	fclose(f);
 
@@ -33,7 +33,10 @@ WGPUShaderModule create_shader(const char *path) {
 	WGPUShaderModuleDescriptor desc = {0};
 	desc.nextInChain = &wgsl.chain;
 
-	return wgpuDeviceCreateShaderModule(rs.device, &desc);
+	WGPUShaderModule sh = wgpuDeviceCreateShaderModule(rs.device, &desc);
+	free(code);
+
+	return sh;
 }
 
 static void request_adapter_cb(WGPURequestAdapterStatus status, WGPUAdapter adapter, char const *message, void *userdata) {
@@ -223,6 +226,8 @@ int main() {
 	pipeline_desc.layout = NULL;
 
 	rs.pipeline = wgpuDeviceCreateRenderPipeline(rs.device, &pipeline_desc);
+
+	// Mainloop
 
 	emscripten_set_main_loop(main_loop, 0, true);
 
